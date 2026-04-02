@@ -800,7 +800,7 @@ class AppliedWebTerminalAstrbot(Star):
 
             if action in {"statusimg", "statusimage", "图片状态", "状态图"}:
                 uuid = parts[2] if len(parts) >= 3 else None
-                result = await self._reply_status(event, event.unified_msg_origin, uuid, fmt="image", busy_only=True)
+                result = await self._reply_status(event, event.unified_msg_origin, uuid, fmt="image", busy_only=False)
                 yield result
                 return
 
