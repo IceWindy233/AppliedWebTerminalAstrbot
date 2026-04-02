@@ -1,0 +1,14 @@
+{
+  "base_url": {
+    "description": "AE2 Web Terminal 服务器地址",
+    "type": "string",
+    "hint": "例如: http://example.com:5045",
+    "obvious_hint": true
+  },
+  "mute_keywords": {
+    "description": "合成完成提醒静默关键词",
+    "type": "list",
+    "hint": "支持正则表达式，匹配到的产物合成完成时将不发送提醒。修改后需重启生效。",
+    "default": []
+  }
+}
