@@ -8,8 +8,10 @@ from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, urlencode
 
 import requests
+import websockets
 
 from astrbot.api import logger, AstrBotConfig
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
@@ -23,6 +25,8 @@ POLL_INTERVAL = 5
 COMPLETION_COOLDOWN_SEC = 30
 TOKEN_REFRESH_LEAD_SEC = 60
 TOKEN_REFRESH_FALLBACK_SEC = 15 * 60
+CPU_DETAIL_FETCH_TIMEOUT = 8
+CPU_DETAIL_MESSAGE_TIMEOUT = 2
 
 
 
@@ -38,6 +42,10 @@ def _normalize_text(value: Any) -> str:
 
 def _normalize_cpu_label(value: str) -> str:
     return re.sub(r"[\s#]", "", _normalize_text(value).lower())
+
+
+def _normalize_uuid_prefix(value: str) -> str:
+    return _normalize_text(value).lower()
 
 
 def _decode_jwt_exp(token: str) -> int:
@@ -76,6 +84,21 @@ def _encode_path_segment(value: str) -> str:
         .replace("?", "%3F")
         .replace("#", "%23")
     )
+
+
+def _http_to_ws_url(base_url: str, path: str, query: dict[str, Any] | None = None) -> str:
+    if base_url.startswith("https://"):
+        ws_base = "wss://" + base_url[len("https://"):]
+    elif base_url.startswith("http://"):
+        ws_base = "ws://" + base_url[len("http://"):]
+    elif base_url.startswith("wss://") or base_url.startswith("ws://"):
+        ws_base = base_url
+    else:
+        ws_base = "ws://" + base_url
+    route = path if path.startswith("/") else f"/{path}"
+    if query:
+        return f"{ws_base}{route}?{urlencode(query, quote_via=quote)}"
+    return f"{ws_base}{route}"
 
 
 class StateStore:
@@ -511,6 +534,129 @@ COMPLETION_TMPL = '''
 </html>
 '''
 
+CPU_DETAIL_TMPL = '''
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #08101d; font-family: "PingFang SC", "Microsoft YaHei", Arial, sans-serif; color: #ebf4ff; padding: 24px; min-width: 900px; }
+  .header { background: linear-gradient(135deg, #123453, #0d2036); border-radius: 18px; padding: 22px 24px; margin-bottom: 18px; }
+  .title { font-size: 28px; color: #f3f9ff; margin-bottom: 10px; }
+  .sub { font-size: 14px; color: #a8c7e8; line-height: 1.8; }
+  .panel { background: #0d1727; border: 1px solid #34557b; border-radius: 16px; padding: 18px; margin-bottom: 16px; }
+  .panel-title { font-size: 22px; color: #eff7ff; margin-bottom: 8px; }
+  .panel-sub { font-size: 15px; color: #9cb6cf; margin-bottom: 16px; }
+  .state-row { display: flex; gap: 12px; align-items: center; margin-bottom: 14px; }
+  .state-badge { padding: 4px 12px; border-radius: 999px; font-size: 14px; }
+  .state-badge.busy { background: #ec742a; color: #fff6eb; }
+  .state-badge.idle { background: #244d71; color: #ebf6ff; }
+  .task-row { display: flex; gap: 14px; align-items: center; margin-bottom: 14px; }
+  .task-icon { width: 56px; height: 56px; border-radius: 12px; background: #24374d; display: flex; align-items: center; justify-content: center; color: #b7cde3; font-size: 24px; flex-shrink: 0; }
+  .task-icon img { width: 48px; height: 48px; }
+  .task-main { flex: 1; }
+  .task-name { font-size: 20px; color: #ffe8ce; }
+  .task-meta { font-size: 15px; color: #d7e5f4; margin-top: 6px; }
+  .summary-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 10px; }
+  .metric { background: #13253a; border-radius: 12px; padding: 12px; }
+  .metric-label { font-size: 13px; color: #9db6d0; margin-bottom: 6px; }
+  .metric-value { font-size: 20px; color: #f0f7ff; }
+  .table { width: 100%; border-collapse: collapse; }
+  .table th, .table td { padding: 12px 10px; border-bottom: 1px solid #213956; text-align: left; font-size: 14px; }
+  .table th { color: #a8c6e6; font-weight: 600; }
+  .item-cell { display: flex; align-items: center; gap: 10px; }
+  .mini-icon { width: 28px; height: 28px; border-radius: 8px; background: #24374d; display: flex; align-items: center; justify-content: center; color: #b7cde3; font-size: 14px; flex-shrink: 0; }
+  .mini-icon img { width: 22px; height: 22px; }
+  .empty { font-size: 16px; color: #bdd1e5; padding: 14px 0 2px; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div class="title">{{ title }}</div>
+    <div class="sub">终端: {{ terminalName }} | {{ terminalUuid }}</div>
+    <div class="sub">生成时间: {{ timestamp }}</div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-title">CPU #{{ cpuId }}</div>
+    {% if showCpuSubtitle %}
+    <div class="panel-sub">{{ cpuName }}</div>
+    {% endif %}
+    <div class="state-row">
+      <span class="state-badge {{ stateClass }}">{{ stateText }}</span>
+      <span class="panel-sub">协处理器 {{ coProcessorCount }} | 存储 {{ storageSizeText }}</span>
+    </div>
+
+    {% if busy %}
+    <div class="task-row">
+      <div class="task-icon">
+        {% if icon_url %}<img src="{{ icon_url }}" alt="icon">{% else %}?{% endif %}
+      </div>
+      <div class="task-main">
+        <div class="task-name">{{ taskName }}</div>
+        <div class="task-meta">当前合成 x{{ amount }}{% if progressText %} | 已完成 {{ progressText }}{% endif %}</div>
+      </div>
+    </div>
+    <div class="summary-grid">
+      <div class="metric">
+        <div class="metric-label">已耗时</div>
+        <div class="metric-value">{{ durationText }}</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">明细条目</div>
+        <div class="metric-value">{{ entryCount }}</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">协处理器</div>
+        <div class="metric-value">{{ coProcessorCount }}</div>
+      </div>
+    </div>
+    {% else %}
+    <div class="empty">当前无合成任务。</div>
+    {% endif %}
+  </div>
+
+  {% if busy %}
+  <div class="panel">
+    <div class="panel-title">合成明细</div>
+    {% if entries %}
+    <table class="table">
+      <thead>
+        <tr>
+          <th>物品</th>
+          <th>待处理</th>
+          <th>处理中</th>
+          <th>已存储</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for entry in entries %}
+        <tr>
+          <td>
+            <div class="item-cell">
+              <div class="mini-icon">
+                {% if entry.icon_url %}<img src="{{ entry.icon_url }}" alt="icon">{% else %}?{% endif %}
+              </div>
+              <span>{{ entry.name }}</span>
+            </div>
+          </td>
+          <td>{{ entry.pendingAmount }}</td>
+          <td>{{ entry.activeAmount }}</td>
+          <td>{{ entry.storedAmount }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty">暂无详细条目。</div>
+    {% endif %}
+  </div>
+  {% endif %}
+</body>
+</html>
+'''
+
 
 class AppliedWebTerminalClient:
     def __init__(
@@ -582,6 +728,61 @@ class AppliedWebTerminalClient:
         if not isinstance(data, list):
             return []
         return [self._normalize_cpu(cpu) for cpu in data]
+
+    async def fetch_cpu_detail(self, cpu_id: str | int) -> dict | None:
+        snapshot = await self._fetch_cpus()
+        cpu_id_text = str(int(cpu_id))
+        selected_cpu = next((cpu for cpu in snapshot if cpu.get("id") == cpu_id_text), None)
+        if not selected_cpu:
+            return None
+
+        await self._ensure_token()
+        ws_url = _http_to_ws_url(self.base_url, "/cpuMonitor", {"token": self._token})
+        target_ws_id: int | None = None
+        selected_sent = False
+        deadline = _now() + CPU_DETAIL_FETCH_TIMEOUT
+
+        async with websockets.connect(ws_url, open_timeout=REQUEST_TIMEOUT, close_timeout=REQUEST_TIMEOUT) as ws:
+            await ws.send(json.dumps({"type": "update_interval", "value": 1}, ensure_ascii=False))
+
+            while _now() < deadline:
+                try:
+                    raw_message = await asyncio.wait_for(ws.recv(), timeout=CPU_DETAIL_MESSAGE_TIMEOUT)
+                except asyncio.TimeoutError:
+                    break
+                payload = json.loads(raw_message)
+                if payload.get("type") != "status":
+                    continue
+
+                ws_cpus_raw = payload.get("cpus")
+                ws_cpus = [self._normalize_cpu(cpu) for cpu in ws_cpus_raw] if isinstance(ws_cpus_raw, list) else []
+                if target_ws_id is None:
+                    target_ws_id = self._resolve_ws_cpu_id(cpu_id_text, snapshot, ws_cpus)
+                if target_ws_id is None:
+                    continue
+
+                if not selected_sent:
+                    await ws.send(json.dumps({"type": "select_cpu", "cpuId": target_ws_id}, ensure_ascii=False))
+                    selected_sent = True
+                    continue
+
+                target_cpu = next((cpu for cpu in ws_cpus if cpu.get("id") == str(target_ws_id)), None)
+                if not target_cpu:
+                    continue
+
+                detail = self._normalize_crafting_detail(payload.get("craftingStatus"))
+                if not target_cpu.get("busy") or detail or payload.get("craftingStatus") is None:
+                    return {
+                        "requestedCpuId": cpu_id_text,
+                        "cpu": target_cpu,
+                        "detail": detail,
+                    }
+
+        return {
+            "requestedCpuId": cpu_id_text,
+            "cpu": selected_cpu,
+            "detail": None,
+        }
 
     async def _fetch_json(self, route: str, retry: bool = True) -> Any:
         await self._ensure_token()
@@ -684,6 +885,8 @@ class AppliedWebTerminalClient:
             "id": cpu_id,
             "name": cpu_name,
             "busy": bool(cpu.get("busy")),
+            "storageSize": int(cpu.get("storageSize") or 0),
+            "coProcessorCount": int(cpu.get("coProcessorCount") or 0),
             "craftingStatus": status,
         }
 
@@ -699,8 +902,71 @@ class AppliedWebTerminalClient:
             "itemType": _normalize_text(what.get("type")),
             "displayName": what.get("displayName"),
             "amount": int(crafting.get("amount") or 0),
+            "progress": int(status.get("progress") or 0),
+            "totalItems": int(status.get("totalItems") or 0),
             "elapsedTimeNanos": int(status.get("elapsedTimeNanos") or 0),
         }
+
+    @staticmethod
+    def _normalize_crafting_detail(status: dict | None) -> dict | None:
+        if not status or not isinstance(status, dict):
+            return None
+        entries_raw = status.get("entries")
+        if not isinstance(entries_raw, list):
+            return None
+        entries = []
+        for entry in entries_raw:
+            if not isinstance(entry, dict):
+                continue
+            what = entry.get("what") if isinstance(entry.get("what"), dict) else {}
+            entries.append(
+                {
+                    "serial": int(entry.get("serial") or 0),
+                    "itemId": _normalize_text(what.get("id")),
+                    "itemType": _normalize_text(what.get("type")),
+                    "displayName": what.get("displayName"),
+                    "pendingAmount": int(entry.get("pendingAmount") or 0),
+                    "activeAmount": int(entry.get("activeAmount") or 0),
+                    "storedAmount": int(entry.get("storedAmount") or 0),
+                }
+            )
+        entries.sort(
+            key=lambda item: (
+                -(item["pendingAmount"] + item["activeAmount"]),
+                -item["pendingAmount"],
+                -item["activeAmount"],
+                -item["storedAmount"],
+                item["serial"],
+            )
+        )
+        return {
+            "fullStatus": bool(status.get("fullStatus")),
+            "elapsedTime": int(status.get("elapsedTime") or 0),
+            "remainingItemCount": int(status.get("remainingItemCount") or 0),
+            "startItemCount": int(status.get("startItemCount") or 0),
+            "entries": entries,
+        }
+
+    @staticmethod
+    def _resolve_ws_cpu_id(http_cpu_id: str, http_cpus: list[dict], ws_cpus: list[dict]) -> int | None:
+        ws_ids = [int(cpu["id"]) for cpu in ws_cpus if str(cpu.get("id", "")).isdigit()]
+        if not ws_ids:
+            return None
+        http_id_int = int(http_cpu_id)
+
+        sorted_http_ids = sorted(int(cpu["id"]) for cpu in http_cpus if str(cpu.get("id", "")).isdigit())
+        sorted_ws_ids = sorted(ws_ids)
+        if http_id_int in sorted_http_ids:
+            index = sorted_http_ids.index(http_id_int)
+            if index < len(sorted_ws_ids):
+                return sorted_ws_ids[index]
+
+        if http_id_int in ws_ids:
+            return http_id_int
+        plus_one = http_id_int + 1
+        if plus_one in ws_ids:
+            return plus_one
+        return None
 
 
 @register("AppliedWebTerminalAstrbot", "icewindy", "AE2WebTerminal QQ 群监控插件", "0.2.0")
@@ -813,6 +1079,15 @@ class AppliedWebTerminalAstrbot(Star):
                 yield result
                 return
 
+            if action in {"cpu", "detail", "详情", "cpudetail"}:
+                uuid, cpu_id, fmt, ok = self._parse_cpu_detail_args(parts[2:])
+                if not ok:
+                    yield event.plain_result("[AE2] 用法: /ae cpu [终端UUID] <CPU编号> [image|text]")
+                    return
+                result = await self._reply_cpu_detail(event, event.unified_msg_origin, uuid, cpu_id, fmt)
+                yield result
+                return
+
             if action in {"watch", "订阅"}:
                 msg = await self._handle_watch(event.unified_msg_origin, parts[2:], watch=True)
                 yield event.plain_result(msg)
@@ -833,23 +1108,27 @@ class AppliedWebTerminalAstrbot(Star):
             [
                 "[AE2] 可用命令:",
                 "/ae terminals",
-                "/ae bind <终端UUID> <密码>",
-                "/ae unbind <终端UUID>",
+                "/ae bind <终端UUID或唯一前缀> <密码>",
+                "/ae unbind <终端UUID或唯一前缀>",
                 "/ae list",
                 "/ae status",
                 "/ae status text",
                 "/ae status image",
                 "/ae status busy",
-                "/ae status <终端UUID>",
-                "/ae status <终端UUID> text",
-                "/ae status <终端UUID> image",
-                "/ae status <终端UUID> busy",
-                "/ae statusimg [终端UUID]",
-                "/ae watch <终端UUID> all",
-                "/ae watch <终端UUID> cpu <编号>",
-                "/ae unwatch <终端UUID> all",
-                "/ae unwatch <终端UUID> cpu <编号>",
-                "若当前群只绑定一个终端，watch/unwatch 可省略 <终端UUID>",
+                "/ae status <终端UUID或唯一前缀>",
+                "/ae status <终端UUID或唯一前缀> text",
+                "/ae status <终端UUID或唯一前缀> image",
+                "/ae status <终端UUID或唯一前缀> busy",
+                "/ae statusimg [终端UUID或唯一前缀]",
+                "/ae cpu <编号>",
+                "/ae cpu <编号> text",
+                "/ae cpu <终端UUID或唯一前缀> <编号>",
+                "/ae cpu <终端UUID或唯一前缀> <编号> text",
+                "/ae watch <终端UUID或唯一前缀> all",
+                "/ae watch <终端UUID或唯一前缀> cpu <编号>",
+                "/ae unwatch <终端UUID或唯一前缀> all",
+                "/ae unwatch <终端UUID或唯一前缀> cpu <编号>",
+                "UUID 支持唯一前缀；若当前群只绑定一个终端，cpu/watch/unwatch 也可省略 UUID",
             ]
         )
 
@@ -874,6 +1153,30 @@ class AppliedWebTerminalAstrbot(Star):
                 continue
             return None, "image", False, False
         return uuid, fmt, True, busy_only
+
+    @staticmethod
+    def _parse_cpu_detail_args(args: list[str]) -> tuple[str | None, str | None, str, bool]:
+        fmt = "image"
+        uuid = None
+        cpu_id = None
+        for token in args:
+            low = token.lower()
+            if low in {"image", "img", "图片", "图"}:
+                fmt = "image"
+                continue
+            if low in {"text", "txt", "文字"}:
+                fmt = "text"
+                continue
+            if token.isdigit():
+                if cpu_id is None:
+                    cpu_id = str(int(token))
+                    continue
+                return None, None, "image", False
+            if uuid is None:
+                uuid = token
+                continue
+            return None, None, "image", False
+        return uuid, cpu_id, fmt, cpu_id is not None
 
     async def _list_available_terminals(self) -> list[dict]:
         def _call():
@@ -900,6 +1203,21 @@ class AppliedWebTerminalAstrbot(Star):
             return "[AE2] 当前没有发现可绑定终端。"
         return "\n".join(["[AE2] 可绑定终端:"] + [f"{t['name']} | {t['uuid']}" for t in terminals])
 
+    def _resolve_uuid_prefix(self, candidates: list[dict], raw_uuid: str, *, scope_text: str) -> dict | str | None:
+        query = _normalize_uuid_prefix(raw_uuid)
+        if not query:
+            return None
+        exact = next((item for item in candidates if _normalize_uuid_prefix(item.get("uuid")) == query), None)
+        if exact:
+            return exact
+        matches = [item for item in candidates if _normalize_uuid_prefix(item.get("uuid")).startswith(query)]
+        if not matches:
+            return None
+        if len(matches) == 1:
+            return matches[0]
+        preview = "、".join(f"{item['name']}({item['uuid']})" for item in matches[:5])
+        return f"[AE2] {scope_text}“{raw_uuid}”匹配到多个终端，请提供更长一些的 UUID 前缀。候选: {preview}"
+
     def _render_bindings(self, session: str) -> str:
         bindings = self.state.list_group_bindings(session)
         if not bindings:
@@ -915,29 +1233,37 @@ class AppliedWebTerminalAstrbot(Star):
 
     async def _handle_bind(self, session: str, uuid: str, password: str) -> str:
         terminals = await self._list_available_terminals()
-        target = next((x for x in terminals if x["uuid"] == uuid), None)
+        target = self._resolve_uuid_prefix(terminals, uuid, scope_text="终端 UUID ")
+        if isinstance(target, str):
+            return target
         if not target:
             return f"[AE2] 找不到终端 {uuid}，先用 /ae terminals 查看可绑定终端。"
 
-        await self._ensure_terminal(uuid, target["name"], password)
+        await self._ensure_terminal(target["uuid"], target["name"], password)
         await self.state.bind_terminal(
             session,
-            uuid=uuid,
+            uuid=target["uuid"],
             name=target["name"],
             password=password,
             watch_all=True,
             cpu_ids=[],
         )
-        return f"[AE2] 已绑定终端 {target['name']} ({uuid})，默认订阅全部 CPU 完成提醒。"
+        return f"[AE2] 已绑定终端 {target['name']} ({target['uuid']})，默认订阅全部 CPU 完成提醒。"
 
     async def _handle_unbind(self, session: str, uuid: str) -> str:
-        binding = self.state.get_group_binding(session, uuid)
+        bindings = self.state.list_group_bindings(session)
+        target = self._resolve_uuid_prefix(bindings, uuid, scope_text="当前群绑定的终端 UUID ")
+        if isinstance(target, str):
+            return target
+        if not target:
+            return f"[AE2] 当前群没有绑定终端 {uuid}。"
+        binding = self.state.get_group_binding(session, target["uuid"])
         if not binding:
             return f"[AE2] 当前群没有绑定终端 {uuid}。"
-        await self.state.unbind_terminal(session, uuid)
-        if not self.state.is_terminal_referenced(uuid):
-            await self._release_terminal(uuid)
-        return f"[AE2] 已解绑终端 {binding['name']} ({uuid})。"
+        await self.state.unbind_terminal(session, target["uuid"])
+        if not self.state.is_terminal_referenced(target["uuid"]):
+            await self._release_terminal(target["uuid"])
+        return f"[AE2] 已解绑终端 {binding['name']} ({target['uuid']})。"
 
     async def _handle_watch(self, session: str, args: list[str], watch: bool) -> str:
         if len(args) < 1:
@@ -956,7 +1282,12 @@ class AppliedWebTerminalAstrbot(Star):
             uuid = bindings[0]["uuid"]
             tail = args
         else:
-            uuid = args[0]
+            resolved = self._resolve_uuid_prefix(bindings, args[0], scope_text="当前群绑定的终端 UUID ")
+            if isinstance(resolved, str):
+                return resolved
+            if not resolved:
+                return f"[AE2] 当前群未绑定终端 {args[0]}。"
+            uuid = resolved["uuid"]
             tail = args[1:]
 
         if not tail:
@@ -1003,6 +1334,29 @@ class AppliedWebTerminalAstrbot(Star):
             logger.warning(f"[AE2] 状态图片渲染失败，回退文本: {exc}")
             return MessageChain().message(self._render_status_text(payload))
 
+    async def _reply_cpu_detail(
+        self,
+        event: AstrMessageEvent,
+        session: str,
+        uuid: str | None,
+        cpu_id: str | None,
+        fmt: str,
+    ) -> MessageChain:
+        payload = await self._build_cpu_detail_payload(session, uuid, cpu_id)
+        if isinstance(payload, str):
+            return MessageChain().message(payload)
+
+        if fmt == "text":
+            return MessageChain().message(self._render_cpu_detail_text(payload))
+
+        try:
+            render_data = await self._prepare_cpu_detail_render_data(payload)
+            url = await self.html_render(CPU_DETAIL_TMPL, render_data)
+            return event.image_result(url)
+        except Exception as exc:
+            logger.warning(f"[AE2] CPU 详情图片渲染失败，回退文本: {exc}")
+            return MessageChain().message(self._render_cpu_detail_text(payload))
+
     async def _build_status_payload(self, session: str, uuid: str | None, busy_only: bool = False) -> dict | str:
         bindings = self.state.list_group_bindings(session)
         if not bindings:
@@ -1010,9 +1364,12 @@ class AppliedWebTerminalAstrbot(Star):
 
         selected = bindings
         if uuid:
-            selected = [b for b in bindings if b["uuid"] == uuid]
-            if not selected:
+            resolved = self._resolve_uuid_prefix(bindings, uuid, scope_text="当前群绑定的终端 UUID ")
+            if isinstance(resolved, str):
+                return resolved
+            if not resolved:
                 return f"[AE2] 当前群未绑定终端 {uuid}。"
+            selected = [resolved]
 
         terminals = []
         total_cpu = 0
@@ -1088,6 +1445,82 @@ class AppliedWebTerminalAstrbot(Star):
             "totalBusy": total_busy,
         }
 
+    async def _build_cpu_detail_payload(self, session: str, uuid: str | None, cpu_id: str | None) -> dict | str:
+        if not cpu_id:
+            return "[AE2] 用法: /ae cpu [终端UUID] <CPU编号> [image|text]"
+
+        binding = self._resolve_target_binding(session, uuid)
+        if isinstance(binding, str):
+            return binding
+
+        client = self.clients.get(binding["uuid"])
+        if not client:
+            return f"[AE2] 终端 {binding['name']} 当前未初始化。"
+
+        detail = await client.fetch_cpu_detail(cpu_id)
+        if not detail:
+            return f"[AE2] 在终端 {binding['name']} 中找不到 CPU #{cpu_id}。"
+
+        cpu = detail["cpu"]
+        task = cpu.get("craftingStatus")
+        rendered_name = await self.translation.render_item_name(task)
+        icon_bytes = await self.icon_service.get_icon_bytes(
+            task.get("itemType") if isinstance(task, dict) else "",
+            task.get("itemId") if isinstance(task, dict) else "",
+        )
+        detail_entries = []
+        raw_detail = detail.get("detail") or {}
+        for entry in raw_detail.get("entries", []):
+            entry_name = await self.translation.render_component(entry.get("displayName")) or entry.get("itemId") or "未知物品"
+            entry_icon = await self.icon_service.get_icon_bytes(entry.get("itemType"), entry.get("itemId"))
+            detail_entries.append(
+                {
+                    "name": entry_name,
+                    "pendingAmount": int(entry.get("pendingAmount") or 0),
+                    "activeAmount": int(entry.get("activeAmount") or 0),
+                    "storedAmount": int(entry.get("storedAmount") or 0),
+                    "iconBytes": entry_icon,
+                }
+            )
+
+        return {
+            "title": "[AE2] CPU 合成详情",
+            "terminalName": binding["name"],
+            "terminalUuid": binding["uuid"],
+            "cpuId": detail.get("requestedCpuId") or cpu["id"],
+            "cpuName": cpu["name"],
+            "busy": bool(cpu.get("busy")),
+            "coProcessorCount": int(cpu.get("coProcessorCount") or 0),
+            "storageSize": int(cpu.get("storageSize") or 0),
+            "taskName": rendered_name,
+            "amount": int(task.get("amount") or 0) if isinstance(task, dict) else 0,
+            "progress": int(task.get("progress") or 0) if isinstance(task, dict) else 0,
+            "totalItems": int(task.get("totalItems") or 0) if isinstance(task, dict) else 0,
+            "durationText": _format_duration((int(task.get("elapsedTimeNanos") or 0) / 1_000_000_000) if isinstance(task, dict) else 0),
+            "iconBytes": icon_bytes,
+            "detail": {
+                "startItemCount": int(raw_detail.get("startItemCount") or 0),
+                "remainingItemCount": int(raw_detail.get("remainingItemCount") or 0),
+                "elapsedTime": int(raw_detail.get("elapsedTime") or 0),
+                "entries": detail_entries,
+            },
+        }
+
+    def _resolve_target_binding(self, session: str, uuid: str | None) -> dict | str:
+        bindings = self.state.list_group_bindings(session)
+        if not bindings:
+            return "[AE2] 当前群没有绑定任何终端。先用 /ae terminals 查看，再用 /ae bind 绑定。"
+        if uuid:
+            binding = self._resolve_uuid_prefix(bindings, uuid, scope_text="当前群绑定的终端 UUID ")
+            if isinstance(binding, str):
+                return binding
+            if not binding:
+                return f"[AE2] 当前群未绑定终端 {uuid}。"
+            return binding
+        if len(bindings) == 1:
+            return bindings[0]
+        return "[AE2] 当前群绑定了多个终端，请在命令里显式指定终端 UUID。"
+
     def _render_status_text(self, payload: dict) -> str:
         lines = [payload["title"]]
         for terminal in payload["terminals"]:
@@ -1104,6 +1537,38 @@ class AppliedWebTerminalAstrbot(Star):
                 lines.append(f"{cpu_title}: 忙碌")
                 lines.append(f"任务: {cpu['taskName']} x{cpu['amount']}")
                 lines.append(f"耗时: {cpu['durationText']}")
+        return "\n".join(lines)
+
+    def _render_cpu_detail_text(self, payload: dict) -> str:
+        lines = [
+            payload["title"],
+            f"终端: {payload['terminalName']} | {payload['terminalUuid']}",
+            f"CPU #{payload['cpuId']} {payload['cpuName']}",
+            f"状态: {'忙碌' if payload['busy'] else '空闲'}",
+            f"协处理器: {payload['coProcessorCount']} | 存储: {self._format_storage_size(payload['storageSize'])}",
+        ]
+        if not payload["busy"]:
+            lines.append("当前无合成任务。")
+            return "\n".join(lines)
+
+        progress_text = self._format_progress(payload["progress"], payload["totalItems"])
+        lines.extend(
+            [
+                f"任务: {payload['taskName']} x{payload['amount']}",
+                f"耗时: {payload['durationText']}",
+                f"进度: {progress_text or '未知'}",
+                "明细:",
+            ]
+        )
+        entries = payload["detail"]["entries"]
+        if not entries:
+            lines.append("暂无详细条目。")
+            return "\n".join(lines)
+
+        for idx, entry in enumerate(entries, start=1):
+            lines.append(
+                f"{idx}. {entry['name']} | 待处理 {entry['pendingAmount']} | 处理中 {entry['activeAmount']} | 已存储 {entry['storedAmount']}"
+            )
         return "\n".join(lines)
 
     async def _ensure_terminal(self, uuid: str, name: str, password: str) -> None:
@@ -1274,6 +1739,41 @@ class AppliedWebTerminalAstrbot(Star):
             "terminals": terminals,
         }
 
+    async def _prepare_cpu_detail_render_data(self, payload: dict) -> dict:
+        cpu_label = f"CPU #{payload['cpuId']}"
+        cpu_name = payload.get("cpuName", "")
+        entries = [
+            {
+                "name": entry["name"],
+                "pendingAmount": entry["pendingAmount"],
+                "activeAmount": entry["activeAmount"],
+                "storedAmount": entry["storedAmount"],
+                "icon_url": self._icon_to_data_url(entry.get("iconBytes")),
+            }
+            for entry in payload["detail"]["entries"][:30]
+        ]
+        return {
+            "title": payload["title"],
+            "terminalName": payload["terminalName"],
+            "terminalUuid": payload["terminalUuid"],
+            "timestamp": _format_timestamp(),
+            "cpuId": payload["cpuId"],
+            "cpuName": cpu_name,
+            "showCpuSubtitle": bool(cpu_name and _normalize_cpu_label(cpu_name) != _normalize_cpu_label(cpu_label)),
+            "busy": payload["busy"],
+            "stateClass": "busy" if payload["busy"] else "idle",
+            "stateText": "忙碌" if payload["busy"] else "空闲",
+            "coProcessorCount": payload["coProcessorCount"],
+            "storageSizeText": self._format_storage_size(payload["storageSize"]),
+            "taskName": payload["taskName"],
+            "amount": payload["amount"],
+            "progressText": self._format_progress(payload["progress"], payload["totalItems"]),
+            "durationText": payload["durationText"],
+            "entryCount": len(payload["detail"]["entries"]),
+            "icon_url": self._icon_to_data_url(payload.get("iconBytes")),
+            "entries": entries,
+        }
+
     async def _prepare_completion_render_data(self, payload: dict) -> dict:
         is_cpu = payload["type"] == "cpu-completed"
         data = {
@@ -1301,3 +1801,24 @@ class AppliedWebTerminalAstrbot(Star):
                 for i, t in enumerate(payload.get("tasks", [])[:5], start=1)
             ]
         return data
+
+    @staticmethod
+    def _format_progress(progress: int, total: int) -> str:
+        if total <= 0:
+            return ""
+        ratio = max(0, min(progress / total, 1))
+        return f"{ratio * 100:.1f}%"
+
+    @staticmethod
+    def _format_storage_size(size: int) -> str:
+        if size <= 0:
+            return "0 B"
+        units = ["B", "KB", "MB", "GB", "TB"]
+        value = float(size)
+        idx = 0
+        while value >= 1024 and idx < len(units) - 1:
+            value /= 1024
+            idx += 1
+        if idx == 0:
+            return f"{int(value)} {units[idx]}"
+        return f"{value:.1f} {units[idx]}"
