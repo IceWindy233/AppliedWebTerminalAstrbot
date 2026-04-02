@@ -718,13 +718,14 @@ class AppliedWebTerminalAstrbot(Star):
         self.data_dir = Path(StarTools.get_data_dir("AppliedWebTerminalAstrbot"))
 
     def _get_base_url(self) -> str:
-        url = str(self.config.get("base_url", ""))
+        url = str(self.config.get("base_url", "")).strip()
         if url:
             return url.rstrip("/")
         env_url = os.getenv("AWT_BASE_URL")
         if env_url:
             return env_url.rstrip("/")
-        raise RuntimeError("[AE2] 未配置 base_url，请在插件设置中填写 AE2 Web Terminal 地址")
+        logger.warning("[AE2] 未配置 base_url，请在插件设置中填写 AE2 Web Terminal 地址。功能将不可用，直到配置完成。")
+        return ""
 
     def _load_mute_keywords(self) -> list[re.Pattern]:
         keywords = self.config.get("mute_keywords", [])
@@ -737,6 +738,9 @@ class AppliedWebTerminalAstrbot(Star):
         return patterns
 
     async def initialize(self):
+        if not self.base_url:
+            logger.warning("[AE2] base_url 未配置，跳过终端初始化。请在插件设置中配置。")
+            return
         await self.state.load()
         for terminal in self.state.list_terminal_configs():
             try:
