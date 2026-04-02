@@ -710,6 +710,7 @@ class AppliedWebTerminalAstrbot(Star):
         self.config = config
         self.base_url = self._get_base_url()
         self.mute_patterns: list[re.Pattern] = self._load_mute_keywords()
+        self.enable_terminal_report = bool(self.config.get("enable_terminal_report", True))
         self.state = StateStore()
         self.translation = TranslationService(self.base_url)
         self.icon_service = ItemIconService(self.base_url)
@@ -1161,6 +1162,9 @@ class AppliedWebTerminalAstrbot(Star):
         await self._broadcast_completion(targets, payload, fallback)
 
     async def _on_terminal_completed(self, event_payload: dict) -> None:
+        if not self.enable_terminal_report:
+            return
+
         task_map: dict[str, bytes | None] = {}
         for cpu in event_payload.get("previousBusy", []):
             task = cpu.get("craftingStatus")
@@ -1172,6 +1176,9 @@ class AppliedWebTerminalAstrbot(Star):
                 task.get("itemId") if isinstance(task, dict) else "",
             )
             task_map[name] = icon_bytes
+
+        if not task_map:
+            return
 
         payload = {
             "type": "terminal-completed",

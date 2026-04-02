@@ -1,6 +1,6 @@
 # AppliedWebTerminal AstrBot 插件
 
-适用于 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 的 AE2 Applied Energistics 2 Web Terminal 群监控插件，支持 QQ（OneBot）等平台。
+适用于 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 的基于 [Applied Web Terminal](https://www.curseforge.com/minecraft/mc-mods/applied-web-terminal) 的群监控插件，支持 QQ（OneBot）等平台。
 
 ## 功能
 

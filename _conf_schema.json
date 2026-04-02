@@ -10,5 +10,11 @@
     "type": "list",
     "hint": "支持正则表达式，匹配到的产物合成完成时将不发送提醒。修改后需重启生效。",
     "default": []
+  },
+  "enable_terminal_report": {
+    "description": "启用终端队列完成提醒",
+    "type": "bool",
+    "hint": "当终端所有 CPU 从忙碌变为空闲时，是否发送本轮合成统计报表。",
+    "default": true
   }
 }
