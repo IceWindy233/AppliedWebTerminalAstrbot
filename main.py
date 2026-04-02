@@ -800,16 +800,16 @@ class AppliedWebTerminalAstrbot(Star):
 
             if action in {"statusimg", "statusimage", "图片状态", "状态图"}:
                 uuid = parts[2] if len(parts) >= 3 else None
-                result = await self._reply_status(event, event.unified_msg_origin, uuid, fmt="image")
+                result = await self._reply_status(event, event.unified_msg_origin, uuid, fmt="image", busy_only=True)
                 yield result
                 return
 
             if action in {"status", "状态"}:
-                uuid, fmt, ok = self._parse_status_args(parts[2:])
+                uuid, fmt, ok, busy_only = self._parse_status_args(parts[2:])
                 if not ok:
-                    yield event.plain_result("[AE2] 用法: /ae status [终端UUID] [image|text]")
+                    yield event.plain_result("[AE2] 用法: /ae status [终端UUID] [image|text] [busy]")
                     return
-                result = await self._reply_status(event, event.unified_msg_origin, uuid, fmt)
+                result = await self._reply_status(event, event.unified_msg_origin, uuid, fmt, busy_only)
                 yield result
                 return
 
@@ -839,9 +839,11 @@ class AppliedWebTerminalAstrbot(Star):
                 "/ae status",
                 "/ae status text",
                 "/ae status image",
+                "/ae status busy",
                 "/ae status <终端UUID>",
                 "/ae status <终端UUID> text",
                 "/ae status <终端UUID> image",
+                "/ae status <终端UUID> busy",
                 "/ae statusimg [终端UUID]",
                 "/ae watch <终端UUID> all",
                 "/ae watch <终端UUID> cpu <编号>",
@@ -852,9 +854,10 @@ class AppliedWebTerminalAstrbot(Star):
         )
 
     @staticmethod
-    def _parse_status_args(args: list[str]) -> tuple[str | None, str, bool]:
+    def _parse_status_args(args: list[str]) -> tuple[str | None, str, bool, bool]:
         fmt = "image"
         uuid = None
+        busy_only = False
         for token in args:
             low = token.lower()
             if low in {"image", "img", "图片", "图"}:
@@ -863,11 +866,14 @@ class AppliedWebTerminalAstrbot(Star):
             if low in {"text", "txt", "文字"}:
                 fmt = "text"
                 continue
+            if low in {"busy", "忙碌", "忙"}:
+                busy_only = True
+                continue
             if uuid is None:
                 uuid = token
                 continue
-            return None, "image", False
-        return uuid, fmt, True
+            return None, "image", False, False
+        return uuid, fmt, True, busy_only
 
     async def _list_available_terminals(self) -> list[dict]:
         def _call():
@@ -981,8 +987,8 @@ class AppliedWebTerminalAstrbot(Star):
 
         return "[AE2] 用法: /ae watch <终端UUID> all|cpu <编号>"
 
-    async def _reply_status(self, event: AstrMessageEvent, session: str, uuid: str | None, fmt: str) -> MessageChain:
-        payload = await self._build_status_payload(session, uuid)
+    async def _reply_status(self, event: AstrMessageEvent, session: str, uuid: str | None, fmt: str, busy_only: bool = False) -> MessageChain:
+        payload = await self._build_status_payload(session, uuid, busy_only)
         if isinstance(payload, str):
             return MessageChain().message(payload)
 
@@ -997,7 +1003,7 @@ class AppliedWebTerminalAstrbot(Star):
             logger.warning(f"[AE2] 状态图片渲染失败，回退文本: {exc}")
             return MessageChain().message(self._render_status_text(payload))
 
-    async def _build_status_payload(self, session: str, uuid: str | None) -> dict | str:
+    async def _build_status_payload(self, session: str, uuid: str | None, busy_only: bool = False) -> dict | str:
         bindings = self.state.list_group_bindings(session)
         if not bindings:
             return "[AE2] 当前群没有绑定任何终端。先用 /ae terminals 查看，再用 /ae bind 绑定。"
@@ -1030,6 +1036,8 @@ class AppliedWebTerminalAstrbot(Star):
             cpus = []
             for cpu in view["snapshot"]:
                 if not cpu.get("busy") or not cpu.get("craftingStatus"):
+                    if busy_only:
+                        continue
                     cpus.append(
                         {
                             "id": cpu["id"],

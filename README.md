@@ -21,8 +21,10 @@
 | `/ae status` | 查看合成状态（默认图片模式） |
 | `/ae status text` | 以文本格式查看状态 |
 | `/ae status image` | 以图片格式查看状态 |
+| `/ae status busy` | 仅查看正在有合成任务的 CPU |
 | `/ae status <终端UUID>` | 查看指定终端的状态 |
-| `/ae statusimg [终端UUID]` | 强制以图片格式查看状态 |
+| `/ae status <终端UUID> busy` | 查看指定终端的忙碌 CPU |
+| `/ae statusimg [终端UUID]` | 强制以图片格式查看忙碌 CPU |
 | `/ae watch <终端UUID> all` | 订阅该终端全部 CPU 完成提醒 |
 | `/ae watch <终端UUID> cpu <编号>` | 订阅指定 CPU 完成提醒 |
 | `/ae unwatch <终端UUID> all` | 取消订阅该终端全部 CPU |
