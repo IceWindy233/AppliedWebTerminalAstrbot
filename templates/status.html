@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #08101e; font-family: "PingFang SC", "Microsoft YaHei", Arial, sans-serif; color: #e8f4ff; padding: 24px; min-width: 800px; }
+  .header { background: #122e4c; border-radius: 18px; padding: 20px 24px; margin-bottom: 18px; }
+  .header h1 { font-size: 28px; color: #e8f4ff; margin-bottom: 12px; }
+  .header .time { font-size: 14px; color: #a0c4e8; margin-bottom: 8px; }
+  .header .summary { font-size: 20px; color: #d0e6f8; }
+  .terminal { background: #0a1626; border-radius: 16px; padding: 16px; margin-bottom: 18px; border: 1px solid #375c84; }
+  .terminal-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; }
+  .terminal-name { font-size: 20px; color: #eef6ff; }
+  .terminal-uuid { font-size: 14px; color: #8fa6c4; margin-top: 4px; }
+  .terminal-status { font-size: 14px; color: #b9d3ee; }
+  .cpu-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+  .cpu-card { border-radius: 12px; padding: 12px; }
+  .cpu-card.busy { background: #361c12; border: 1px solid #d06234; }
+  .cpu-card.idle { background: #101e30; border: 1px solid #487098; }
+  .cpu-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .cpu-title { font-size: 22px; color: #f2f7ff; }
+  .cpu-subtitle { font-size: 16px; color: #9eb6ce; margin-top: 2px; }
+  .state-badge { padding: 2px 10px; border-radius: 10px; font-size: 14px; }
+  .state-badge.busy { background: #ec742a; color: #fff7ec; }
+  .state-badge.idle { background: #204c6e; color: #e8f4ff; }
+  .cpu-task { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+  .cpu-icon { width: 44px; height: 44px; background: #2c3c54; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 20px; color: #b4c4dc; flex-shrink: 0; }
+  .cpu-icon img { width: 36px; height: 36px; }
+  .cpu-task-info { flex: 1; }
+  .task-name { font-size: 16px; color: #ffecd4; }
+  .cpu-meta { display: flex; justify-content: space-between; margin-top: 12px; font-size: 16px; color: #f4dec4; }
+  .idle-text { font-size: 16px; color: #c0d4e8; margin-top: 20px; }
+  .no-cpus { background: #122034; border-radius: 12px; padding: 16px; text-align: center; color: #c2d4e8; font-size: 16px; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <h1>{{ title }}</h1>
+    <div class="time">生成时间 {{ timestamp }}</div>
+    <div class="summary">{{ terminal_count }} 个终端  |  {{ total_cpu }} 个 CPU  |  {{ total_busy }} 个忙碌中</div>
+  </div>
+  {% for terminal in terminals %}
+  <div class="terminal">
+    <div class="terminal-header">
+      <div>
+        <div class="terminal-name">{{ terminal.name }}</div>
+        <div class="terminal-uuid">{{ terminal.uuid }}</div>
+      </div>
+      <div class="terminal-status">{{ terminal.connectText }}  |  忙碌 {{ terminal.busyCount }}/{{ terminal.cpuCount }}</div>
+    </div>
+    {% if terminal.cpus %}
+    <div class="cpu-grid">
+      {% for cpu in terminal.cpus %}
+      <div class="cpu-card {{ cpu.stateClass }}">
+        <div class="cpu-header">
+          <div>
+            <div class="cpu-title">CPU #{{ cpu.id }}</div>
+            {% if cpu.showSubtitle %}
+            <div class="cpu-subtitle">{{ cpu.name }}</div>
+            {% endif %}
+          </div>
+          <span class="state-badge {{ cpu.stateClass }}">{{ cpu.stateText }}</span>
+        </div>
+        {% if cpu.busy %}
+        <div class="cpu-task">
+          <div class="cpu-icon">
+            {% if cpu.icon_url %}<img src="{{ cpu.icon_url }}" alt="icon">{% else %}?{% endif %}
+          </div>
+          <div class="cpu-task-info">
+            <div class="task-name">{{ cpu.taskName }}</div>
+          </div>
+        </div>
+        <div class="cpu-meta">
+          <span>x{{ cpu.amount }}</span>
+          <span>{{ cpu.durationText }}</span>
+        </div>
+        {% else %}
+        <div class="idle-text">当前无合成任务</div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="no-cpus">暂无 CPU 状态</div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</body>
+</html>

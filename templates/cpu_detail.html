@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #08101d; font-family: "PingFang SC", "Microsoft YaHei", Arial, sans-serif; color: #ebf4ff; padding: 24px; min-width: 900px; }
+  .header { background: linear-gradient(135deg, #123453, #0d2036); border-radius: 18px; padding: 22px 24px; margin-bottom: 18px; }
+  .title { font-size: 28px; color: #f3f9ff; margin-bottom: 10px; }
+  .sub { font-size: 14px; color: #a8c7e8; line-height: 1.8; }
+  .panel { background: #0d1727; border: 1px solid #34557b; border-radius: 16px; padding: 18px; margin-bottom: 16px; }
+  .panel-title { font-size: 22px; color: #eff7ff; margin-bottom: 8px; }
+  .panel-sub { font-size: 15px; color: #9cb6cf; margin-bottom: 16px; }
+  .state-row { display: flex; gap: 12px; align-items: center; margin-bottom: 14px; }
+  .state-badge { padding: 4px 12px; border-radius: 999px; font-size: 14px; }
+  .state-badge.busy { background: #ec742a; color: #fff6eb; }
+  .state-badge.idle { background: #244d71; color: #ebf6ff; }
+  .task-row { display: flex; gap: 14px; align-items: center; margin-bottom: 14px; }
+  .task-icon { width: 56px; height: 56px; border-radius: 12px; background: #24374d; display: flex; align-items: center; justify-content: center; color: #b7cde3; font-size: 24px; flex-shrink: 0; }
+  .task-icon img { width: 48px; height: 48px; }
+  .task-main { flex: 1; }
+  .task-name { font-size: 20px; color: #ffe8ce; }
+  .task-meta { font-size: 15px; color: #d7e5f4; margin-top: 6px; }
+  .summary-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 10px; }
+  .metric { background: #13253a; border-radius: 12px; padding: 12px; }
+  .metric-label { font-size: 13px; color: #9db6d0; margin-bottom: 6px; }
+  .metric-value { font-size: 20px; color: #f0f7ff; }
+  .table { width: 100%; border-collapse: collapse; }
+  .table th, .table td { padding: 12px 10px; border-bottom: 1px solid #213956; text-align: left; font-size: 14px; }
+  .table th { color: #a8c6e6; font-weight: 600; }
+  .item-cell { display: flex; align-items: center; gap: 10px; }
+  .mini-icon { width: 28px; height: 28px; border-radius: 8px; background: #24374d; display: flex; align-items: center; justify-content: center; color: #b7cde3; font-size: 14px; flex-shrink: 0; }
+  .mini-icon img { width: 22px; height: 22px; }
+  .empty { font-size: 16px; color: #bdd1e5; padding: 14px 0 2px; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div class="title">{{ title }}</div>
+    <div class="sub">终端: {{ terminalName }} | {{ terminalUuid }}</div>
+    <div class="sub">生成时间: {{ timestamp }}</div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-title">CPU #{{ cpuId }}</div>
+    {% if showCpuSubtitle %}
+    <div class="panel-sub">{{ cpuName }}</div>
+    {% endif %}
+    <div class="state-row">
+      <span class="state-badge {{ stateClass }}">{{ stateText }}</span>
+      <span class="panel-sub">协处理器 {{ coProcessorCount }} | 存储 {{ storageSizeText }}</span>
+    </div>
+
+    {% if busy %}
+    <div class="task-row">
+      <div class="task-icon">
+        {% if icon_url %}<img src="{{ icon_url }}" alt="icon">{% else %}?{% endif %}
+      </div>
+      <div class="task-main">
+        <div class="task-name">{{ taskName }}</div>
+        <div class="task-meta">当前合成 x{{ amount }}{% if progressText %} | 已完成 {{ progressText }}{% endif %}</div>
+      </div>
+    </div>
+    <div class="summary-grid">
+      <div class="metric">
+        <div class="metric-label">已耗时</div>
+        <div class="metric-value">{{ durationText }}</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">明细条目</div>
+        <div class="metric-value">{{ entryCount }}</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">协处理器</div>
+        <div class="metric-value">{{ coProcessorCount }}</div>
+      </div>
+    </div>
+    {% else %}
+    <div class="empty">当前无合成任务。</div>
+    {% endif %}
+  </div>
+
+  {% if busy %}
+  <div class="panel">
+    <div class="panel-title">合成明细</div>
+    {% if entries %}
+    <table class="table">
+      <thead>
+        <tr>
+          <th>物品</th>
+          <th>待处理</th>
+          <th>处理中</th>
+          <th>已存储</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for entry in entries %}
+        <tr>
+          <td>
+            <div class="item-cell">
+              <div class="mini-icon">
+                {% if entry.icon_url %}<img src="{{ entry.icon_url }}" alt="icon">{% else %}?{% endif %}
+              </div>
+              <span>{{ entry.name }}</span>
+            </div>
+          </td>
+          <td>{{ entry.pendingAmount }}</td>
+          <td>{{ entry.activeAmount }}</td>
+          <td>{{ entry.storedAmount }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty">暂无详细条目。</div>
+    {% endif %}
+  </div>
+  {% endif %}
+</body>
+</html>

@@ -101,6 +101,18 @@ def _http_to_ws_url(base_url: str, path: str, query: dict[str, Any] | None = Non
     return f"{ws_base}{route}"
 
 
+def _parse_clock_minutes(value: str) -> int | None:
+    text = _normalize_text(value)
+    match = re.fullmatch(r"(\d{1,2}):(\d{2})", text)
+    if not match:
+        return None
+    hours = int(match.group(1))
+    minutes = int(match.group(2))
+    if hours < 0 or hours > 23 or minutes < 0 or minutes > 59:
+        return None
+    return hours * 60 + minutes
+
+
 class StateStore:
     def __init__(self):
         self.data_dir = StarTools.get_data_dir("AppliedWebTerminalAstrbot")
@@ -369,293 +381,16 @@ class ItemIconService:
         return data
 
 
-STATUS_TMPL = '''
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { background: #08101e; font-family: "PingFang SC", "Microsoft YaHei", Arial, sans-serif; color: #e8f4ff; padding: 24px; min-width: 800px; }
-  .header { background: #122e4c; border-radius: 18px; padding: 20px 24px; margin-bottom: 18px; }
-  .header h1 { font-size: 28px; color: #e8f4ff; margin-bottom: 12px; }
-  .header .time { font-size: 14px; color: #a0c4e8; margin-bottom: 8px; }
-  .header .summary { font-size: 20px; color: #d0e6f8; }
-  .terminal { background: #0a1626; border-radius: 16px; padding: 16px; margin-bottom: 18px; border: 1px solid #375c84; }
-  .terminal-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; }
-  .terminal-name { font-size: 20px; color: #eef6ff; }
-  .terminal-uuid { font-size: 14px; color: #8fa6c4; margin-top: 4px; }
-  .terminal-status { font-size: 14px; color: #b9d3ee; }
-  .cpu-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
-  .cpu-card { border-radius: 12px; padding: 12px; }
-  .cpu-card.busy { background: #361c12; border: 1px solid #d06234; }
-  .cpu-card.idle { background: #101e30; border: 1px solid #487098; }
-  .cpu-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-  .cpu-title { font-size: 22px; color: #f2f7ff; }
-  .cpu-subtitle { font-size: 16px; color: #9eb6ce; margin-top: 2px; }
-  .state-badge { padding: 2px 10px; border-radius: 10px; font-size: 14px; }
-  .state-badge.busy { background: #ec742a; color: #fff7ec; }
-  .state-badge.idle { background: #204c6e; color: #e8f4ff; }
-  .cpu-task { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
-  .cpu-icon { width: 44px; height: 44px; background: #2c3c54; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 20px; color: #b4c4dc; flex-shrink: 0; }
-  .cpu-icon img { width: 36px; height: 36px; }
-  .cpu-task-info { flex: 1; }
-  .task-name { font-size: 16px; color: #ffecd4; }
-  .cpu-meta { display: flex; justify-content: space-between; margin-top: 12px; font-size: 16px; color: #f4dec4; }
-  .idle-text { font-size: 16px; color: #c0d4e8; margin-top: 20px; }
-  .no-cpus { background: #122034; border-radius: 12px; padding: 16px; text-align: center; color: #c2d4e8; font-size: 16px; }
-</style>
-</head>
-<body>
-  <div class="header">
-    <h1>{{ title }}</h1>
-    <div class="time">生成时间 {{ timestamp }}</div>
-    <div class="summary">{{ terminal_count }} 个终端  |  {{ total_cpu }} 个 CPU  |  {{ total_busy }} 个忙碌中</div>
-  </div>
-  {% for terminal in terminals %}
-  <div class="terminal">
-    <div class="terminal-header">
-      <div>
-        <div class="terminal-name">{{ terminal.name }}</div>
-        <div class="terminal-uuid">{{ terminal.uuid }}</div>
-      </div>
-      <div class="terminal-status">{{ terminal.connectText }}  |  忙碌 {{ terminal.busyCount }}/{{ terminal.cpuCount }}</div>
-    </div>
-    {% if terminal.cpus %}
-    <div class="cpu-grid">
-      {% for cpu in terminal.cpus %}
-      <div class="cpu-card {{ cpu.stateClass }}">
-        <div class="cpu-header">
-          <div>
-            <div class="cpu-title">CPU #{{ cpu.id }}</div>
-            {% if cpu.showSubtitle %}
-            <div class="cpu-subtitle">{{ cpu.name }}</div>
-            {% endif %}
-          </div>
-          <span class="state-badge {{ cpu.stateClass }}">{{ cpu.stateText }}</span>
-        </div>
-        {% if cpu.busy %}
-        <div class="cpu-task">
-          <div class="cpu-icon">
-            {% if cpu.icon_url %}<img src="{{ cpu.icon_url }}" alt="icon">{% else %}?{% endif %}
-          </div>
-          <div class="cpu-task-info">
-            <div class="task-name">{{ cpu.taskName }}</div>
-          </div>
-        </div>
-        <div class="cpu-meta">
-          <span>x{{ cpu.amount }}</span>
-          <span>{{ cpu.durationText }}</span>
-        </div>
-        {% else %}
-        <div class="idle-text">当前无合成任务</div>
-        {% endif %}
-      </div>
-      {% endfor %}
-    </div>
-    {% else %}
-    <div class="no-cpus">暂无 CPU 状态</div>
-    {% endif %}
-  </div>
-  {% endfor %}
-</body>
-</html>
-'''
+TEMPLATE_DIR = Path(__file__).with_name("templates")
 
-COMPLETION_TMPL = '''
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { background: #0a1422; font-family: "PingFang SC", "Microsoft YaHei", Arial, sans-serif; color: #e8f4ff; padding: 24px; min-width: 600px; }
-  .header { border-radius: 16px; padding: 16px 20px; margin-bottom: 16px; }
-  .header.cpu-done { background: #144636; }
-  .header.terminal-done { background: #143656; }
-  .header h1 { font-size: 28px; color: #f2faff; margin-bottom: 10px; }
-  .header .info { font-size: 14px; color: #c0dcf6; margin-bottom: 4px; }
-  .header .time { font-size: 14px; color: #a4c6e8; }
-  .body-card { background: #0e1c2e; border-radius: 16px; padding: 16px; border: 1px solid #486e96; }
-  .cpu-title { font-size: 20px; color: #eef6ff; margin-bottom: 6px; }
-  .cpu-subtitle { font-size: 16px; color: #a2bac4; margin-bottom: 12px; }
-  .task-row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
-  .task-icon { width: 56px; height: 56px; background: #2c3c54; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 24px; color: #b4c4dc; flex-shrink: 0; }
-  .task-icon img { width: 48px; height: 48px; }
-  .task-name { font-size: 18px; color: #ffecd4; }
-  .meta-row { display: flex; gap: 24px; margin-top: 16px; font-size: 16px; color: #eedcc2; }
-  .task-list-item { display: flex; align-items: center; gap: 8px; background: #162840; border-radius: 10px; padding: 8px 12px; margin-bottom: 8px; }
-  .task-list-item .mini-icon { width: 22px; height: 22px; background: #2c3c54; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 12px; color: #b4c4dc; flex-shrink: 0; }
-  .task-list-item .mini-icon img { width: 18px; height: 18px; }
-  .task-list-item .name { font-size: 14px; color: #e4eefc; }
-  .empty { font-size: 16px; color: #b0c6de; }
-</style>
-</head>
-<body>
-  <div class="header {{ headerClass }}">
-    <h1>{{ title }}</h1>
-    <div class="info">终端: {{ terminalName }} | {{ terminalUuid }}</div>
-    <div class="time">时间: {{ timestamp }}</div>
-  </div>
-  <div class="body-card">
-    {% if isCpuCompleted %}
-    <div class="cpu-title">CPU #{{ cpuId }}</div>
-    {% if showCpuSubtitle %}
-    <div class="cpu-subtitle">{{ cpuName }}</div>
-    {% endif %}
-    <div class="task-row">
-      <div class="task-icon">
-        {% if icon_url %}<img src="{{ icon_url }}" alt="icon">{% else %}?{% endif %}
-      </div>
-      <div class="task-name">{{ taskName }}</div>
-    </div>
-    <div class="meta-row">
-      <span>数量 x{{ amount }}</span>
-      <span>耗时 {{ durationText }}</span>
-      <span>状态 已完成</span>
-    </div>
-    {% else %}
-    <div class="cpu-title">本轮占用 CPU: {{ cpuCount }}</div>
-    {% if tasks %}
-    {% for task in tasks %}
-    <div class="task-list-item">
-      <div class="mini-icon">
-        {% if task.icon_url %}<img src="{{ task.icon_url }}" alt="icon">{% else %}?{% endif %}
-      </div>
-      <div class="name">{{ task.index }}. {{ task.name }}</div>
-    </div>
-    {% endfor %}
-    {% else %}
-    <div class="empty">无任务摘要</div>
-    {% endif %}
-    {% endif %}
-  </div>
-</body>
-</html>
-'''
 
-CPU_DETAIL_TMPL = '''
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { background: #08101d; font-family: "PingFang SC", "Microsoft YaHei", Arial, sans-serif; color: #ebf4ff; padding: 24px; min-width: 900px; }
-  .header { background: linear-gradient(135deg, #123453, #0d2036); border-radius: 18px; padding: 22px 24px; margin-bottom: 18px; }
-  .title { font-size: 28px; color: #f3f9ff; margin-bottom: 10px; }
-  .sub { font-size: 14px; color: #a8c7e8; line-height: 1.8; }
-  .panel { background: #0d1727; border: 1px solid #34557b; border-radius: 16px; padding: 18px; margin-bottom: 16px; }
-  .panel-title { font-size: 22px; color: #eff7ff; margin-bottom: 8px; }
-  .panel-sub { font-size: 15px; color: #9cb6cf; margin-bottom: 16px; }
-  .state-row { display: flex; gap: 12px; align-items: center; margin-bottom: 14px; }
-  .state-badge { padding: 4px 12px; border-radius: 999px; font-size: 14px; }
-  .state-badge.busy { background: #ec742a; color: #fff6eb; }
-  .state-badge.idle { background: #244d71; color: #ebf6ff; }
-  .task-row { display: flex; gap: 14px; align-items: center; margin-bottom: 14px; }
-  .task-icon { width: 56px; height: 56px; border-radius: 12px; background: #24374d; display: flex; align-items: center; justify-content: center; color: #b7cde3; font-size: 24px; flex-shrink: 0; }
-  .task-icon img { width: 48px; height: 48px; }
-  .task-main { flex: 1; }
-  .task-name { font-size: 20px; color: #ffe8ce; }
-  .task-meta { font-size: 15px; color: #d7e5f4; margin-top: 6px; }
-  .summary-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 10px; }
-  .metric { background: #13253a; border-radius: 12px; padding: 12px; }
-  .metric-label { font-size: 13px; color: #9db6d0; margin-bottom: 6px; }
-  .metric-value { font-size: 20px; color: #f0f7ff; }
-  .table { width: 100%; border-collapse: collapse; }
-  .table th, .table td { padding: 12px 10px; border-bottom: 1px solid #213956; text-align: left; font-size: 14px; }
-  .table th { color: #a8c6e6; font-weight: 600; }
-  .item-cell { display: flex; align-items: center; gap: 10px; }
-  .mini-icon { width: 28px; height: 28px; border-radius: 8px; background: #24374d; display: flex; align-items: center; justify-content: center; color: #b7cde3; font-size: 14px; flex-shrink: 0; }
-  .mini-icon img { width: 22px; height: 22px; }
-  .empty { font-size: 16px; color: #bdd1e5; padding: 14px 0 2px; }
-</style>
-</head>
-<body>
-  <div class="header">
-    <div class="title">{{ title }}</div>
-    <div class="sub">终端: {{ terminalName }} | {{ terminalUuid }}</div>
-    <div class="sub">生成时间: {{ timestamp }}</div>
-  </div>
+def _load_template(name: str) -> str:
+    return (TEMPLATE_DIR / name).read_text(encoding="utf-8")
 
-  <div class="panel">
-    <div class="panel-title">CPU #{{ cpuId }}</div>
-    {% if showCpuSubtitle %}
-    <div class="panel-sub">{{ cpuName }}</div>
-    {% endif %}
-    <div class="state-row">
-      <span class="state-badge {{ stateClass }}">{{ stateText }}</span>
-      <span class="panel-sub">协处理器 {{ coProcessorCount }} | 存储 {{ storageSizeText }}</span>
-    </div>
 
-    {% if busy %}
-    <div class="task-row">
-      <div class="task-icon">
-        {% if icon_url %}<img src="{{ icon_url }}" alt="icon">{% else %}?{% endif %}
-      </div>
-      <div class="task-main">
-        <div class="task-name">{{ taskName }}</div>
-        <div class="task-meta">当前合成 x{{ amount }}{% if progressText %} | 已完成 {{ progressText }}{% endif %}</div>
-      </div>
-    </div>
-    <div class="summary-grid">
-      <div class="metric">
-        <div class="metric-label">已耗时</div>
-        <div class="metric-value">{{ durationText }}</div>
-      </div>
-      <div class="metric">
-        <div class="metric-label">明细条目</div>
-        <div class="metric-value">{{ entryCount }}</div>
-      </div>
-      <div class="metric">
-        <div class="metric-label">协处理器</div>
-        <div class="metric-value">{{ coProcessorCount }}</div>
-      </div>
-    </div>
-    {% else %}
-    <div class="empty">当前无合成任务。</div>
-    {% endif %}
-  </div>
-
-  {% if busy %}
-  <div class="panel">
-    <div class="panel-title">合成明细</div>
-    {% if entries %}
-    <table class="table">
-      <thead>
-        <tr>
-          <th>物品</th>
-          <th>待处理</th>
-          <th>处理中</th>
-          <th>已存储</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for entry in entries %}
-        <tr>
-          <td>
-            <div class="item-cell">
-              <div class="mini-icon">
-                {% if entry.icon_url %}<img src="{{ entry.icon_url }}" alt="icon">{% else %}?{% endif %}
-              </div>
-              <span>{{ entry.name }}</span>
-            </div>
-          </td>
-          <td>{{ entry.pendingAmount }}</td>
-          <td>{{ entry.activeAmount }}</td>
-          <td>{{ entry.storedAmount }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% else %}
-    <div class="empty">暂无详细条目。</div>
-    {% endif %}
-  </div>
-  {% endif %}
-</body>
-</html>
-'''
+STATUS_TMPL = _load_template("status.html")
+COMPLETION_TMPL = _load_template("completion.html")
+CPU_DETAIL_TMPL = _load_template("cpu_detail.html")
 
 
 class AppliedWebTerminalClient:
@@ -976,6 +711,7 @@ class AppliedWebTerminalAstrbot(Star):
         self.config = config
         self.base_url = self._get_base_url()
         self.mute_patterns: list[re.Pattern] = self._load_mute_keywords()
+        self.mute_periods: list[tuple[int, int]] = self._load_mute_periods()
         self.enable_terminal_report = bool(self.config.get("enable_terminal_report", True))
         self.state = StateStore()
         self.translation = TranslationService(self.base_url)
@@ -1003,6 +739,30 @@ class AppliedWebTerminalAstrbot(Star):
             except re.error as exc:
                 logger.warning(f"[AE2] 无效的正则表达式 '{kw}': {exc}")
         return patterns
+
+    def _load_mute_periods(self) -> list[tuple[int, int]]:
+        raw_periods = self.config.get("mute_periods", [])
+        periods: list[tuple[int, int]] = []
+        for item in raw_periods:
+            text = _normalize_text(item).replace("：", ":").replace("—", "-").replace("–", "-").replace("～", "-")
+            if not text:
+                continue
+            parts = [part.strip() for part in text.split("-", 1)]
+            if len(parts) != 2:
+                logger.warning(f"[AE2] 无效的静默时间段 '{item}'，应为 HH:MM-HH:MM。")
+                continue
+            start = _parse_clock_minutes(parts[0])
+            end = _parse_clock_minutes(parts[1])
+            if start is None or end is None:
+                logger.warning(f"[AE2] 无效的静默时间段 '{item}'，应为 HH:MM-HH:MM。")
+                continue
+            periods.append((start, end))
+        return periods
+
+    def _ensure_base_url_configured(self) -> str | None:
+        if self.base_url:
+            return None
+        return "[AE2] 尚未配置 base_url，请先在插件设置中填写 AE2 Web Terminal 地址。"
 
     async def initialize(self):
         if not self.base_url:
@@ -1038,6 +798,11 @@ class AppliedWebTerminalAstrbot(Star):
         try:
             if action in {"help", "帮助"}:
                 yield event.plain_result(self._help_text())
+                return
+
+            config_error = self._ensure_base_url_configured()
+            if config_error:
+                yield event.plain_result(config_error)
                 return
 
             if action in {"terminals", "终端"}:
@@ -1179,6 +944,10 @@ class AppliedWebTerminalAstrbot(Star):
         return uuid, cpu_id, fmt, cpu_id is not None
 
     async def _list_available_terminals(self) -> list[dict]:
+        config_error = self._ensure_base_url_configured()
+        if config_error:
+            raise RuntimeError(config_error)
+
         def _call():
             return requests.get(f"{self.base_url}/list", timeout=REQUEST_TIMEOUT)
 
@@ -1599,6 +1368,8 @@ class AppliedWebTerminalAstrbot(Star):
                 await client.stop()
 
     async def _on_cpu_completed(self, event_payload: dict) -> None:
+        if self._is_in_mute_period():
+            return
         task = event_payload.get("previous", {}).get("craftingStatus") or {}
         task_name = await self.translation.render_item_name(task)
         if self._is_muted(task_name):
@@ -1636,6 +1407,8 @@ class AppliedWebTerminalAstrbot(Star):
 
     async def _on_terminal_completed(self, event_payload: dict) -> None:
         if not self.enable_terminal_report:
+            return
+        if self._is_in_mute_period():
             return
 
         task_map: dict[str, bytes | None] = {}
@@ -1698,6 +1471,20 @@ class AppliedWebTerminalAstrbot(Star):
             return False
         for pattern in self.mute_patterns:
             if pattern.search(task_name):
+                return True
+        return False
+
+    def _is_in_mute_period(self, now: datetime | None = None) -> bool:
+        if not self.mute_periods:
+            return False
+        current = now or datetime.now()
+        minutes = current.hour * 60 + current.minute
+        for start, end in self.mute_periods:
+            if start == end:
+                return True
+            if start < end and start <= minutes < end:
+                return True
+            if start > end and (minutes >= start or minutes < end):
                 return True
         return False
 
